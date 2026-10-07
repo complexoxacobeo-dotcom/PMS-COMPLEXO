@@ -1,0 +1,6 @@
+{
+  "name": "Gestión Hoteleira",
+  "description": "Unha aplicación completa de xestión de recepción de hotel/albergue, reservas, incidencias de mantemento e control de pedidos/almacén.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

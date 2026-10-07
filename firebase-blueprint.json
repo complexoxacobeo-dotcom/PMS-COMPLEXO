@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "Config": {
+      "title": "Config",
+      "description": "Application configuration including base rooms, agencies, and extras prices.",
+      "type": "object",
+      "properties": {
+        "baseRooms": { "type": "array" },
+        "agencies": { "type": "array" },
+        "credentials": { "type": "object" },
+        "extrasPrices": { "type": "object" }
+      }
+    },
+    "DayData": {
+      "title": "DayData",
+      "description": "Data for a specific date.",
+      "type": "object",
+      "properties": {
+        "rooms": { "type": "array" }
+      }
+    }
+  },
+  "firestore": {
+    "config/{docId}": {
+      "schema": { "$ref": "#/entities/Config" },
+      "description": "Global application configuration. We use docId = 'main'."
+    },
+    "dailyData/{date}": {
+      "schema": { "$ref": "#/entities/DayData" },
+      "description": "Rooms data for a specific date string (e.g. '2023-10-25')."
+    }
+  }
+}

@@ -1,0 +1,401 @@
+                    window.location.reload();
+                }
+            } catch(e) {
+                console.error("Erro limpando ical", e);
+                cAlert("❌ Erro limpando os bloqueos.");
+                if(btn) btn.innerHTML = '🗑️ Limpar Bloqueos iCal';
+            }
+            hideLoader();
+        };
+
+window.processImportListAI = async function() {
+            if (!window.pendingAIParsedReservations || window.pendingAIParsedReservations.length === 0) return;
+            showLoader();
+            let successCount = 0;
+            
+            try {
+                for (let res of window.pendingAIParsedReservations) {
+                    const updatedRooms = [];
+                    let dayData = [];
+                    if (appState.dailyData && appState.dailyData[res.checkIn]) {
+                        dayData = appState.dailyData[res.checkIn];
+                    } else if (typeof google !== 'undefined' && google.script) {
+                        const initRes = await new Promise((resolve) => {
+                            google.script.run
+                                .withSuccessHandler(resolve)
+                                .withFailureHandler(resolve)
+                                .getInitialData(res.checkIn);
+                        });
+                        if (initRes && initRes.dayData) dayData = initRes.dayData;
+                    }
+                    
+                    
+                    // QUICK CHECK: DOES THIS EXACT RESERVATION ALREADY EXIST?
+                    let alreadyExists = true;
+                    for (let ri of res.rooms) {
+                        let baseRoom = appState.baseRooms.find(br => br.id === ri.baseRoomId);
+                        if (!baseRoom) continue;
+                        
+                        let targetClientName = (res.clientName || '').trim().toLowerCase();
+                        let otaName = (res.ota || '').trim().toLowerCase();
+                        
+                        if (baseRoom.type === 'hostel') {
+                            let qty = ri.qty || 1;
+                            let matchingBeds = dayData.filter(r => r.baseId === baseRoom.id && r.clientName && (r.clientName.trim().toLowerCase().includes(targetClientName) || targetClientName.includes(r.clientName.trim().toLowerCase())) && r.status !== 'free');
+                            if (matchingBeds.length < qty) {
+                                alreadyExists = false; break;
+                            }
+                        } else {
+                            let matchingRoom = dayData.find(r => r.baseId === baseRoom.id && r.status !== 'free' && r.clientName && (r.clientName.trim().toLowerCase().includes(targetClientName) || targetClientName.includes(r.clientName.trim().toLowerCase())));
+                            if (!matchingRoom) {
+                                alreadyExists = false; break;
+                            }
+                        }
+                    }
+
+                    if (alreadyExists) {
+                        console.log("Reservation already exists, merging notes and services:", res.clientName);
+                        let updatedExisting = false;
+                        for (let ri of res.rooms) {
+                            let baseRoom = appState.baseRooms.find(br => br.id === ri.baseRoomId);
+                            if (!baseRoom) continue;
+                            
+                            let targetClientName = (res.clientName || '').trim().toLowerCase();
+                            
+                            let matchingRooms = [];
+                            if (baseRoom.type === 'hostel') {
+                                matchingRooms = dayData.filter(r => r.baseId === baseRoom.id && r.status !== 'free' && r.clientName && (r.clientName.trim().toLowerCase().includes(targetClientName) || targetClientName.includes(r.clientName.trim().toLowerCase())));
+                            } else {
+                                let m = dayData.find(r => r.baseId === baseRoom.id && r.status !== 'free' && r.clientName && (r.clientName.trim().toLowerCase().includes(targetClientName) || targetClientName.includes(r.clientName.trim().toLowerCase())));
+                                if (m) matchingRooms.push(m);
+                            }
+                            
+                            for (let matchingRoom of matchingRooms) {
+                                if (res.observations && (!matchingRoom.observations || !matchingRoom.observations.includes(res.observations))) {
+                                    matchingRoom.observations = (matchingRoom.observations ? matchingRoom.observations + "\n" : "") + res.observations;
+                                    updatedExisting = true;
+                                }
+                                if (res.services) {
+                                    if (res.services.breakfast?.qty > 0 && (!matchingRoom.services.breakfast || matchingRoom.services.breakfast.qty === 0)) {
+                                         matchingRoom.services.breakfast = res.services.breakfast; updatedExisting = true;
+                                    }
+                                    if (res.services.halfBoard?.qty > 0 && (!matchingRoom.services.halfBoard || matchingRoom.services.halfBoard.qty === 0)) {
+                                         matchingRoom.services.halfBoard = res.services.halfBoard; updatedExisting = true;
+                                    }
+                                    if (res.services.dinner?.qty > 0 && (!matchingRoom.services.dinner || matchingRoom.services.dinner.qty === 0)) {
+                                         matchingRoom.services.dinner = res.services.dinner; updatedExisting = true;
+                                    }
+                                }
+                                
+                                let o = res.ota || '';
+                                
+                                let oLower = o.trim().toLowerCase();
+                                let matched = false;
+                                if(oLower && appState && appState.agencies) {
+                                    let bestMatch = appState.agencies.find(a => oLower.includes(a.name.toLowerCase()) || a.name.toLowerCase().includes(oLower));
+                                    if(bestMatch) { o = bestMatch.name; matched = true; }
+                                }
+                                if(!matched && oLower) {
+                                    if(oLower.includes('booking')) o = 'Booking.com';
+                                    else if(oLower.includes('hostelworld')) o = 'HostelWorld';
+                                    else if(oLower.includes('pitchup')) o = 'Pitchup';
+                                    else if(oLower.includes('expedia')) o = 'Expedia';
+                                    else if(oLower.includes('airbnb')) o = 'Airbnb';
+                                }
+
+                                if (o && (!matchingRoom.agency || matchingRoom.agency.trim() === '' || matchingRoom.agency.toLowerCase().includes('ical') || matchingRoom.agency.toLowerCase().includes('misterplan'))) {
+                                    matchingRoom.agency = o;
+                                    updatedExisting = true;
+                                } else if (o && matchingRoom.agency !== o) {
+                                    matchingRoom.agency = o;
+                                    updatedExisting = true;
+                                }
+
+                            }
+                        }
+                        
+                        if (updatedExisting) {
+                            appState.dailyData[res.checkIn] = dayData;
+                            if (typeof google === 'undefined' || !google.script) {
+                                 if (res.checkIn === currentPlaningDate) salvarDiaNoServidor();
+                            } else {
+                                 const s = document.getElementById('saveStatus'); if(s) { s.classList.remove('hidden'); setTimeout(()=>s.classList.add('hidden'), 2000); }
+                                 google.script.run.withSuccessHandler(()=>{
+                                    console.log("Merged data saved to server");
+                                 }).saveDayData(res.checkIn, JSON.stringify(dayData));
+                            }
+                        }
+                        
+                        continue;
+                    }
+
+                    // ALSO CHECK IF ROOMS ARE ALREADY OCCUPIED BY SOMEONE ELSE TO AVOID OVERWRITING REAL RESERVATIONS
+                    let roomConflict = false;
+                    for (let ri of res.rooms) {
+                        let baseRoom = appState.baseRooms.find(br => br.id === ri.baseRoomId);
+                        if (!baseRoom || baseRoom.type === 'hostel') continue;
+                        
+                        let existingRoom = dayData.find(r => r.baseId === baseRoom.id);
+                        if (existingRoom && existingRoom.status !== 'free') {
+                            // It is occupied. Is it a ghost block?
+                            let cName = (existingRoom.clientName || '').toLowerCase();
+                            let isGhost = existingRoom.isIcal || cName.includes('verifica') || cName.includes('misterplan') || cName.includes('force_update') || cName.includes('reserv');
+                            if (!isGhost) {
+                                // Real reservation is there, don't overwrite!
+                                roomConflict = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (roomConflict) {
+                        console.log("Skipping reservation because room is already occupied by a real reservation:", res.clientName);
+                        continue;
+                    }
+                    
+                    
+                    for (let ri of res.rooms) {
+                        let baseRoom = null;
+                        if (ri.baseRoomId) {
+                            baseRoom = appState.baseRooms.find(br => br.id === ri.baseRoomId);
+                        } else if (ri.qty > 0 && ri.rawName && (ri.rawName.toLowerCase().includes('cama') || ri.rawName.toLowerCase().includes('liter') || ri.rawName.toLowerCase().includes('albergue') || ri.rawName.toLowerCase().includes('compartida'))) {
+                            baseRoom = appState.baseRooms.find(br => br.type === 'hostel');
+                        }
+                        
+                        if (!baseRoom) continue;
+                        
+                        let o = res.ota || '';
+                        
+                                let oLower = o.trim().toLowerCase();
+                                let matched = false;
+                                if(oLower && appState && appState.agencies) {
+                                    let bestMatch = appState.agencies.find(a => oLower.includes(a.name.toLowerCase()) || a.name.toLowerCase().includes(oLower));
+                                    if(bestMatch) { o = bestMatch.name; matched = true; }
+                                }
+                                if(!matched && oLower) {
+                                    if(oLower.includes('booking')) o = 'Booking.com';
+                                    else if(oLower.includes('hostelworld')) o = 'HostelWorld';
+                                    else if(oLower.includes('pitchup')) o = 'Pitchup';
+                                    else if(oLower.includes('expedia')) o = 'Expedia';
+                                    else if(oLower.includes('airbnb')) o = 'Airbnb';
+                                }
+
+                        
+                        if (baseRoom.type === 'hostel') {
+                            let qty = ri.qty || 1;
+                            let allHostelBases = appState.baseRooms.filter(br => br.type === 'hostel');
+                            let allAvailableBeds = [];
+                            
+                            for (let hb of allHostelBases) {
+                                let beds = dayData.filter(r => r.baseId === hb.id);
+                                if (beds.length === 0) {
+                                    for (let i = 1; i <= (hb.totalBeds || 16); i++) {
+                                        let literaNum = Math.ceil(i / 2);
+                                        let isTop = (i % 2 === 0);
+                                        let bedCode = `${literaNum}${isTop ? 'A' : 'B'}`;
+                                        beds.push({ id: `${hb.id}_${bedCode}`, bedId: bedCode, status: 'free', baseId: hb.id });
+                                    }
+                                }
+                                
+                                let icalBeds = beds.filter(b => b.status !== 'free' && (b.isIcal || (b.clientName && (b.clientName.includes('Verifica') || b.clientName.includes('misterplan') || b.clientName.includes('FORCE_UPDATE') || b.clientName.includes('Reserv')))));
+                                for (let ib of icalBeds) {
+                                    let freeRoom = createEmptyRoomObject(hb.id, hb.number, hb.roomName, 'bed', ib.bedId);
+                                    freeRoom.status = 'free';
+                                    freeRoom.clientName = '';
+                                    updatedRooms.push(freeRoom);
+                                    ib.status = 'free';
+                                    ib.clientName = '';
+                                }
+                                
+                                let availableInThisRoom = beds.filter(b => b.status === 'free' || !b.clientName);
+                                availableInThisRoom.forEach(b => b._hb = hb);
+                                allAvailableBeds.push(...availableInThisRoom);
+                            }
+                            
+                            allAvailableBeds.sort((a, b) => {
+                                if (a.baseId !== b.baseId) return a.baseId.localeCompare(b.baseId);
+                                return a.bedId.localeCompare(b.bedId);
+                            });
+                            
+                            let bedsToAssign = allAvailableBeds.slice(0, qty);
+                            if (bedsToAssign.length < qty) {
+                                console.log("Aviso: Non hai suficientes camas libres no albergue para:", res.clientName);
+                            }
+                            
+                            for (let bed of bedsToAssign) {
+                                let hb = bed._hb;
+                                let uRoom = createEmptyRoomObject(hb.id, hb.number, hb.roomName, 'bed', bed.bedId);
+                                uRoom.status = 'reserved';
+                                uRoom.clientName = res.clientName;
+                                uRoom.checkIn = res.checkIn;
+                                uRoom.checkOut = res.checkOut;
+                                uRoom.price = ri.roomPrice / qty;
+                                uRoom.agency = o;
+                                uRoom.clientPhone = res.phone || '';
+                                updatedRooms.push(uRoom);
+                                bed.status = 'reserved';
+                                bed.clientName = res.clientName;
+                            }
+                        } else {
+                            let uRoom = createEmptyRoomObject(baseRoom.id, baseRoom.number, baseRoom.roomName, baseRoom.type);
+                            uRoom.status = 'reserved';
+                            uRoom.clientName = res.clientName;
+                            uRoom.checkIn = res.checkIn;
+                            uRoom.checkOut = res.checkOut;
+                            uRoom.price = ri.roomPrice;
+                            uRoom.agency = o;
+                            uRoom.clientPhone = res.phone || '';
+                            updatedRooms.push(uRoom);
+                        }
+                    }
+
+                    
+                    if (updatedRooms.length > 0) {
+                        let totalUnits = updatedRooms.length;
+                        for (let uRoom of updatedRooms) {
+                            uRoom.observations = res.observations || '';
+                            if(res.services && totalUnits > 0) {
+                                uRoom.services = {
+                                    breakfast: {qty: Math.floor((res.services.breakfast?.qty || 0)/totalUnits) || ((res.services.breakfast?.qty || 0) > 0 ? 1 : 0), price: (res.services.breakfast?.price || 0)/totalUnits},
+                                    dinner: {qty: Math.floor((res.services.dinner?.qty || 0)/totalUnits) || ((res.services.dinner?.qty || 0) > 0 ? 1 : 0), price: (res.services.dinner?.price || 0)/totalUnits},
+                                    picnic: {qty: Math.floor((res.services.picnic?.qty || 0)/totalUnits) || ((res.services.picnic?.qty || 0) > 0 ? 1 : 0), price: (res.services.picnic?.price || 0)/totalUnits},
+                                    halfBoard: {qty: Math.floor((res.services.halfBoard?.qty || 0)/totalUnits) || ((res.services.halfBoard?.qty || 0) > 0 ? 1 : 0), price: (res.services.halfBoard?.price || 0)/totalUnits},
+                                    fullBoard: {qty: Math.floor((res.services.fullBoard?.qty || 0)/totalUnits) || ((res.services.fullBoard?.qty || 0) > 0 ? 1 : 0), price: (res.services.fullBoard?.price || 0)/totalUnits},
+                                    laundry: {active: false, price: 0},
+                                    mochilas: {qty: 0, price: 0},
+                                    outros: {qty: 0, price: 0},
+                                    parking: false,
+                                    taxi: false
+                                };
+                            }
+                            
+                            
+                            // We will do the multi-day merge after the rooms loop!
+                            // Just tracking it here.
+                            let existingIdx = dayData.findIndex(d => d.id === uRoom.id);
+                            if (existingIdx > -1) {
+                                dayData[existingIdx] = uRoom;
+                            } else {
+                                dayData.push(uRoom);
+                            }
+
+                        }
+                        
+                        
+                        // We must save the local state BEFORE propagarReserva, just in case!
+                        
+                        // LOCAL MULTI-DAY PROPAGATION
+                        let inDate = new Date(res.checkIn);
+                        let outDate = new Date(res.checkOut);
+                        if (isNaN(inDate.getTime()) || isNaN(outDate.getTime()) || outDate <= inDate) {
+                            outDate = new Date(inDate);
+                            outDate.setDate(outDate.getDate() + 1);
+                        }
+                        
+                        let iterD = new Date(inDate);
+                        while(iterD < outDate) {
+                            let dStr = iterD.toISOString().split('T')[0];
+                            if (!appState.dailyData[dStr]) {
+                                // Basic generation if missing
+                                appState.dailyData[dStr] = [];
+                                appState.baseRooms.forEach(base => {
+                                    if (base.type === 'hostel') {
+                                        for (let i = 1; i <= (base.totalBeds || 16); i++) {
+                                            let bedCode = Math.ceil(i/2) + (i%2===0?'A':'B');
+                                            let newBed = createEmptyRoomObject(base.id, base.number, base.roomName, 'bed', bedCode);
+                                            newBed.price = base.bedPrice || 15;
+                                            appState.dailyData[dStr].push(newBed);
+                                        }
+                                    } else {
+                                        appState.dailyData[dStr].push(createEmptyRoomObject(base.id, base.number, base.roomName, base.type));
+                                    }
+                                });
+                            }
+                            
+                            // Merge updatedRooms into this day
+                            for (let uRoom of updatedRooms) {
+                                let idx = appState.dailyData[dStr].findIndex(d => d.id === uRoom.id);
+                                if (idx > -1) {
+                                    appState.dailyData[dStr][idx] = JSON.parse(JSON.stringify(uRoom));
+                                } else {
+                                    appState.dailyData[dStr].push(JSON.parse(JSON.stringify(uRoom)));
+                                }
+                            }
+                            
+                            if (typeof google === 'undefined' || !google.script) {
+                                if (dStr === currentPlaningDate) salvarDiaNoServidor();
+                            }
+                            iterD.setDate(iterD.getDate() + 1);
+                        }
+                        
+                        appState.dailyData[res.checkIn] = dayData; // keep dayData ref intact for this day just in case
+
+
+                        if (typeof google !== 'undefined' && google.script) {
+                            await new Promise((resolve) => {
+                                google.script.run
+                                    .withSuccessHandler(resolve)
+                                    .withFailureHandler(resolve)
+                                    .propagarReserva(res.checkIn, res.checkOut, updatedRooms.map(r => r.id), updatedRooms, res.checkIn);
+                            });
+                            successCount++;
+                        }
+                    }
+                }
+                cAlert(`📋 Importación completada! Gardáronse ${successCount} reservas.`);
+                
+                let modal = document.getElementById('importListModal');
+                if (modal) modal.classList.remove('active');
+                document.getElementById('importListTextarea').value = '';
+                document.getElementById('importSummaryBox').classList.add('hidden');
+                document.getElementById('btnProcessImportAI').disabled = true;
+                document.getElementById('btnProcessImportAI').classList.add('opacity-50', 'cursor-not-allowed');
+                
+                if (typeof google !== 'undefined' && google.script) {
+                    const reloadRes = await new Promise((resolve) => {
+                        google.script.run
+                            .withSuccessHandler(resolve)
+                            .withFailureHandler(resolve)
+                            .getInitialData(currentPlaningDate);
+                    });
+                    if (reloadRes && reloadRes.dayData) {
+                        appState.dailyData[currentPlaningDate] = reloadRes.dayData;
+                        appState.dailyData[currentPlaningDate].forEach(patchRoomServices);
+                    }
+                    xerarDiaSeNonExiste();
+                    renderGrid();
+                    filterGrid();
+                } else {
+                    window.location.reload();
+                }
+            } catch (err) {
+                console.error("Erro importando con IA:", err);
+                cAlert("❌ Produciuse un erro gardando as reservas na base de datos.");
+            }
+            hideLoader();
+        };
+
+
+
+
+
+        window.autoAssignIcal = async function(resObj) {
+            return new Promise((resolve, reject) => {
+                if (typeof firebaseBackend !== 'undefined' && firebaseBackend.autoAssignReservation) {
+                    firebaseBackend.autoAssignReservation(resObj).then(res => {
+                        if(res && res.error) reject(new Error(res.message)); else resolve(res);
+                    }).catch(reject);
+                } else if (typeof google !== 'undefined' && google.script) {
+                    google.script.run.withSuccessHandler(res => {
+                        resolve(res);
+                    }).withFailureHandler(err => {
+                        reject(err);
+                    }).autoAssignReservation(resObj);
+                } else {
+                    reject(new Error("Backend non dispoñible"));
+                }
+            });
+        };
+
+        
+        

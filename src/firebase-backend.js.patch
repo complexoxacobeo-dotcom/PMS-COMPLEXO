@@ -1,0 +1,64 @@
+--- src/firebase-backend.js
++++ src/firebase-backend.js
+@@ -65,11 +65,16 @@
+ }
+ 
+ const getTenantPrefix = () => {
++  let prefix = '';
++  const user = auth.currentUser;
++  if (!localMode && user && user.email !== 'complexoxacobeo@gmail.com') {
++    prefix = `tenants/${user.uid}/`;
++  }
+   let estId = localStorage.getItem('currentEstablishmentId') || 'default';
+-  if (estId === 'default') {
+-    return '';
++  if (estId !== 'default') {
++    prefix += `establishments/${estId}/`;
+   }
+-  return `establishments/${estId}/`;
++  return prefix;
+ };
+ 
+ let localMode = localStorage.getItem('localMode') === 'true';
+@@ -121,9 +126,20 @@
+   getInitialData: async (date) => {
+     try {
+       await ensureAuth();
++      // Get root config to see establishments
++      let rootPrefix = '';
++      const user = auth.currentUser;
++      if (!localMode && user && user.email !== 'complexoxacobeo@gmail.com') {
++        rootPrefix = `tenants/${user.uid}/`;
++      }
++      const rootConfigDoc = await getDoc(doc(db, rootPrefix ? rootPrefix.replace(/\/$/, '') : "config", rootPrefix ? "config/main" : "main"));
++      const rootConfig = rootConfigDoc.exists() ? rootConfigDoc.data() : {};
++      const userEstablishments = rootConfig.establishments || [{id: 'default', name: 'Recepción'}];
++
+       const prefix = getTenantPrefix();
+       const configDoc = await getDoc(doc(db, prefix ? prefix.replace(/\/$/, '') : "config", prefix ? "config/main" : "main"));
+       const config = configDoc.exists() ? configDoc.data() : { baseRooms: [], agencies: [], credentials: {user:'Xacobeo07', pass:'Xacobeo07'}, extrasPrices: {} };
++      config.userEstablishments = userEstablishments;
+       
+       const dayDoc = await getDoc(doc(db, prefix ? `${prefix}dailyData` : "dailyData", date));
+       const dayData = dayDoc.exists() ? dayDoc.data().rooms : [];
+@@ -143,10 +159,20 @@
+   saveAppConfig: async (json) => {
+     try {
+       await ensureAuth();
++      const data = JSON.parse(json);
++      // Save establishments to root config
++      if (data.userEstablishments) {
++        let rootPrefix = '';
++        const user = auth.currentUser;
++        if (!localMode && user && user.email !== 'complexoxacobeo@gmail.com') {
++          rootPrefix = `tenants/${user.uid}/`;
++        }
++        await setDoc(doc(db, rootPrefix ? rootPrefix.replace(/\/$/, '') : "config", rootPrefix ? "config/main" : "main"), { establishments: data.userEstablishments }, { merge: true });
++      }
++
+       const prefix = getTenantPrefix();
+-      await setDoc(doc(db, prefix ? prefix.replace(/\/$/, '') : "config", prefix ? "config/main" : "main"), JSON.parse(json));
++      await setDoc(doc(db, prefix ? prefix.replace(/\/$/, '') : "config", prefix ? "config/main" : "main"), data);
+       return true;
+     } catch(e) {
+       handleFirestoreError(e, OperationType.WRITE, 'config/main');
